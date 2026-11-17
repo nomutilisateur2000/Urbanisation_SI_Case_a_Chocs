@@ -15,8 +15,12 @@ const petziSecret = defineSecret("PETZI_WEBHOOK_SECRET");
 // Configuration
 const REGION = "europe-west6";
 const SIGNATURE_TOLERANCE_SECONDS = 30;
+const TIME_ZONE = "Europe/Zurich";
 
-// Vérification de la signature PETZI
+// =====================================================
+// 1. VERIFICATION DE LA SIGNATURE PETZI
+// =====================================================
+
 function verifyPetziSignature(req, secret) {
   const signatureHeader = req.get("Petzi-Signature");
 
@@ -24,7 +28,6 @@ function verifyPetziSignature(req, secret) {
     return false;
   }
 
-  // Étape 1 : extraction des paramètres
   const signatureParts = {};
 
   for (const part of signatureHeader.split(",")) {
@@ -50,11 +53,9 @@ function verifyPetziSignature(req, secret) {
     return false;
   }
 
-  // Étape 2 : préparation du message signé
   const signedPayload =
     `${timestamp}.${req.rawBody.toString("utf8")}`;
 
-  // Étape 3 : calcul HMAC SHA-256
   const expectedSignature = crypto
     .createHmac("sha256", secret)
     .update(signedPayload)
@@ -62,12 +63,10 @@ function verifyPetziSignature(req, secret) {
 
   const received = Buffer.from(receivedSignature, "hex");
 
-  // Étape 4 : comparaison sécurisée
   if (!crypto.timingSafeEqual(expectedSignature, received)) {
     return false;
   }
 
-  // Étape 5 : vérification du timestamp
   const currentTimestamp = Math.floor(Date.now() / 1000);
   const requestTimestamp = Number(timestamp);
 
@@ -82,13 +81,20 @@ function verifyPetziSignature(req, secret) {
   return true;
 }
 
-// Normalisation des données PETZI
+// =====================================================
+// 2. NORMALISATION DES DONNEES PETZI
+// =====================================================
+
 function normalizeTicket(payload) {
   const ticket = payload.details?.ticket;
   const buyer = payload.details?.buyer || {};
 
   if (!ticket || !ticket.number) {
     throw new Error("Ticket ou numéro de billet manquant");
+  }
+
+  if (ticket.eventId === undefined || ticket.eventId === null) {
+    throw new Error("Identifiant événement manquant");
   }
 
   const session = ticket.sessions?.[0] || {};
@@ -100,13 +106,19 @@ function normalizeTicket(payload) {
     throw new Error("Prix du billet invalide");
   }
 
+  const currency = ticket.price?.currency || null;
+
+  if (!currency) {
+    throw new Error("Devise du billet manquante");
+  }
+
   return {
-    ticketNumber: ticket.number,
+    ticketNumber: String(ticket.number),
     ticketType: ticket.type || null,
     title: ticket.title || null,
     category: ticket.category || null,
 
-    eventId: ticket.eventId ?? null,
+    eventId: String(ticket.eventId),
     eventName: ticket.event || null,
     promoter: ticket.promoter || null,
 
@@ -126,7 +138,7 @@ function normalizeTicket(payload) {
 
     price: {
       amount,
-      currency: ticket.price?.currency || null,
+      currency,
     },
 
     buyer: {
@@ -138,29 +150,254 @@ function normalizeTicket(payload) {
 
     cancellationReason: ticket.cancellationReason || null,
     generatedAt: ticket.generatedAt || null,
-
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   };
 }
 
-// Enregistrement du billet
+// =====================================================
+// 3. IDENTIFIANT DU DOCUMENT
+// =====================================================
+
+function hashTicketNumber(ticketNumber) {
+  return crypto
+    .createHash("sha256")
+    .update(ticketNumber)
+    .digest("hex");
+}
+
+// =====================================================
+// 4. DETERMINATION DES PERIODES STATISTIQUES
+// =====================================================
+
+function getSalesPeriods(date) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+
+  const values = {};
+
+  for (const part of parts) {
+    if (part.type !== "literal") {
+      values[part.type] = part.value;
+    }
+  }
+
+  const dateKey =
+    `${values.year}-${values.month}-${values.day}`;
+
+  const hour = Number(values.hour);
+
+  const monthKey =
+    `${values.year}-${values.month}`;
+
+  return {
+    dateKey,
+    hour,
+    monthKey,
+    hourlyKey:
+      `${dateKey}_${String(hour).padStart(2, "0")}`,
+  };
+}
+
+// =====================================================
+// 5. TRAITEMENT ET AGRÉGATION DU BILLET
+// =====================================================
+
 async function handleTicketCreated(payload) {
   const ticket = normalizeTicket(payload);
 
-  const documentId = crypto
-    .createHash("sha256")
-    .update(ticket.ticketNumber)
-    .digest("hex");
+  // Identifiant unique du billet
+  const documentId = hashTicketNumber(ticket.ticketNumber);
 
-  const ticketRef = db.collection("tickets").doc(documentId);
+  const ticketRef = db
+    .collection("tickets")
+    .doc(documentId);
 
-  // Création ou mise à jour du document
-  await ticketRef.set(ticket, { merge: true });
+  // Date utilisée pour les statistiques
+  // generatedAt est utilisé provisoirement comme date de vente.
+  const generatedDate = ticket.generatedAt
+    ? new Date(ticket.generatedAt)
+    : null;
 
-  console.log("Billet enregistré :", ticket.ticketNumber);
+  const salesDate =
+    generatedDate && !Number.isNaN(generatedDate.getTime())
+      ? generatedDate
+      : new Date();
+
+  const periods = getSalesPeriods(salesDate);
+
+  // Conversion en centimes
+  const revenueCents = Math.round(
+    ticket.price.amount * 100
+  );
+
+  const eventId = ticket.eventId;
+  const currency = ticket.price.currency;
+
+  // Référence des statistiques événement
+  const eventStatsRef = db
+    .collection("eventStats")
+    .doc(eventId);
+
+  // Référence des statistiques quotidiennes
+  const dailyStatsRef = db
+    .collection("eventDailyStats")
+    .doc(`${eventId}_${periods.dateKey}`);
+
+  // Référence des statistiques horaires
+  const hourlyStatsRef = db
+    .collection("eventHourlyStats")
+    .doc(`${eventId}_${periods.hourlyKey}`);
+
+  // Référence des statistiques mensuelles
+  const monthlyStatsRef = db
+    .collection("monthlyStats")
+    .doc(`${eventId}_${periods.monthKey}`);
+
+  // =================================================
+  // TRANSACTION FIRESTORE
+  // =================================================
+
+  const result = await db.runTransaction(async (transaction) => {
+
+    // Lecture du billet pour vérifier le doublon
+    const ticketDoc = await transaction.get(ticketRef);
+
+    if (ticketDoc.exists) {
+      console.log(
+        "Billet déjà enregistré :",
+        ticket.ticketNumber
+      );
+
+      return { duplicate: true };
+    }
+
+    // Lecture des statistiques globales
+    const eventStatsDoc = await transaction.get(eventStatsRef);
+
+    if (
+      eventStatsDoc.exists &&
+      eventStatsDoc.data().currency &&
+      eventStatsDoc.data().currency !== currency
+    ) {
+      throw new Error(
+        `Devise différente pour l'événement ${eventId}`
+      );
+    }
+
+    const previousStats = eventStatsDoc.exists
+      ? eventStatsDoc.data()
+      : {};
+
+    const totalTickets =
+      (previousStats.totalTickets || 0) + 1;
+
+    const totalRevenueCents =
+      (previousStats.totalRevenueCents || 0) +
+      revenueCents;
+
+    // 1. Enregistrement du billet
+    transaction.create(ticketRef, {
+      ...ticket,
+
+      salesDate: admin.firestore.Timestamp.fromDate(
+        salesDate
+      ),
+
+      updatedAt:
+        admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // 2. Statistiques globales par événement
+    transaction.set(eventStatsRef, {
+      eventId,
+      eventName: ticket.eventName,
+
+      totalTickets,
+      totalRevenueCents,
+      totalRevenue: totalRevenueCents / 100,
+
+      currency,
+
+      updatedAt:
+        admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    // 3. Statistiques quotidiennes
+    transaction.set(dailyStatsRef, {
+      eventId,
+      date: periods.dateKey,
+
+      totalTickets:
+        admin.firestore.FieldValue.increment(1),
+
+      totalRevenueCents:
+        admin.firestore.FieldValue.increment(revenueCents),
+
+      currency,
+
+      updatedAt:
+        admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    // 4. Statistiques horaires
+    transaction.set(hourlyStatsRef, {
+      eventId,
+      date: periods.dateKey,
+      hour: periods.hour,
+
+      totalTickets:
+        admin.firestore.FieldValue.increment(1),
+
+      totalRevenueCents:
+        admin.firestore.FieldValue.increment(revenueCents),
+
+      currency,
+
+      updatedAt:
+        admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    // 5. Statistiques mensuelles
+    transaction.set(monthlyStatsRef, {
+      eventId,
+
+      year: Number(periods.monthKey.slice(0, 4)),
+      month: Number(periods.monthKey.slice(5, 7)),
+
+      totalTickets:
+        admin.firestore.FieldValue.increment(1),
+
+      totalRevenueCents:
+        admin.firestore.FieldValue.increment(revenueCents),
+
+      currency,
+
+      updatedAt:
+        admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    return { duplicate: false };
+  });
+
+  if (result.duplicate) {
+    return;
+  }
+
+  console.log(
+    "Billet enregistré et statistiques actualisées :",
+    ticket.ticketNumber
+  );
 }
 
-// Réception des webhooks PETZI
+// =====================================================
+// 6. RECEPTION DES WEBHOOKS PETZI
+// =====================================================
+
 exports.petziWebhook = onRequest(
   {
     region: REGION,
@@ -168,18 +405,22 @@ exports.petziWebhook = onRequest(
     maxInstances: 10,
   },
   async (req, res) => {
+
     if (req.method !== "POST") {
       return res.status(405).send("Method not allowed");
     }
 
     if (!req.is("application/json")) {
-      return res.status(415).send("Content-Type must be application/json");
+      return res
+        .status(415)
+        .send("Content-Type must be application/json");
     }
 
     try {
       // Vérification de la signature
       if (!verifyPetziSignature(req, petziSecret.value())) {
         console.warn("Signature PETZI invalide");
+
         return res.status(401).send("Invalid signature");
       }
 
@@ -189,22 +430,34 @@ exports.petziWebhook = onRequest(
         return res.status(400).send("Invalid webhook payload");
       }
 
-      console.log("Événement PETZI reçu :", payload.event);
+      console.log(
+        "Événement PETZI reçu :",
+        payload.event
+      );
 
       switch (payload.event) {
+
         case "ticket_created":
           await handleTicketCreated(payload);
           break;
 
         default:
-          console.log("Événement non traité :", payload.event);
+          console.log(
+            "Événement non traité :",
+            payload.event
+          );
+
           return res.status(200).send("Event ignored");
       }
 
       return res.status(200).send("Webhook processed");
 
     } catch (error) {
-      console.error("Erreur traitement webhook :", error);
+      console.error(
+        "Erreur traitement webhook :",
+        error
+      );
+
       return res.status(500).send("Internal server error");
     }
   }
