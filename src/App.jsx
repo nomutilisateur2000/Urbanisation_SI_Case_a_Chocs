@@ -1,39 +1,29 @@
 
-import { useState } from "react";
-import { getEvents } from "./services/eventService";
+import { useState, useEffect } from "react";
 import { getTickets } from "./services/ticketService";
+import { firebaseConfig } from "./firestore/config";
 
 function App() {
-  const [events, setEvents] = useState([]);
   const [tickets, setTickets] = useState([]);
+  console.log("Projet Firebase :", firebaseConfig.projectId);
 
-  async function testFirestore() {
-    try {
-      const eventsData = await getEvents();
-      const ticketsData = await getTickets();
-
-      setEvents(eventsData);
+  useEffect(() => {
+    // Écoute des tickets
+    const unsubscribeTickets = getTickets((ticketsData) => {
       setTickets(ticketsData);
+      console.log("Tickets mis à jour :", ticketsData);
+    });
 
-      console.log("Événements récupérés :", eventsData);
-      console.log("Tickets récupérés :", ticketsData);
-
-    } catch (error) {
-      console.error("Erreur Firestore :", error);
-    }
-  }
+    // Arrêt des écouteurs lorsque l'application est démontée
+    return () => {
+      unsubscribeTickets();
+    };
+  }, []);
 
   return (
     <div>
       <h1>Case à Chocs</h1>
-
-      <button onClick={testFirestore}>
-        Tester Firestore
-      </button>
-
-      <h2>Événements</h2>
-      <pre>{JSON.stringify(events, null, 2)}</pre>
-
+      
       <h2>Tickets</h2>
       <pre>{JSON.stringify(tickets, null, 2)}</pre>
     </div>
