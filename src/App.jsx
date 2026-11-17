@@ -1,22 +1,22 @@
 
 import { useState } from "react";
-import { db } from "../firebase/config";
-import { collection, getDocs } from "firebase/firestore";
+import { getEvents } from "./services/eventService";
+import { getTickets } from "./services/ticketService";
 
 function App() {
   const [events, setEvents] = useState([]);
+  const [tickets, setTickets] = useState([]);
 
   async function testFirestore() {
     try {
-      const snapshot = await getDocs(collection(db, "events"));
+      const eventsData = await getEvents();
+      const ticketsData = await getTickets();
 
-      const data = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
+      setEvents(eventsData);
+      setTickets(ticketsData);
 
-      setEvents(data);
-      console.log("Événements récupérés :", data);
+      console.log("Événements récupérés :", eventsData);
+      console.log("Tickets récupérés :", ticketsData);
 
     } catch (error) {
       console.error("Erreur Firestore :", error);
@@ -31,7 +31,11 @@ function App() {
         Tester Firestore
       </button>
 
+      <h2>Événements</h2>
       <pre>{JSON.stringify(events, null, 2)}</pre>
+
+      <h2>Tickets</h2>
+      <pre>{JSON.stringify(tickets, null, 2)}</pre>
     </div>
   );
 }
