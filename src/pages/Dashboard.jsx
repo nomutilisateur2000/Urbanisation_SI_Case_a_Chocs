@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import Sidebar from "../components/Sidebar";
 
 import {
   Ticket,
@@ -8,7 +9,6 @@ import {
   CalendarDays,
   Lightbulb,
   TrendingUp,
-  Music,
 } from "lucide-react";
 
 import {
@@ -111,56 +111,39 @@ function Dashboard() {
   }, [statistics]);
 
   if (loading) {
-    return (
-      <div className="dashboard-message">
-        Chargement des statistiques...
-      </div>
-    );
-  }
+  return (
+    <div className="app-layout">
+      <Sidebar />
+      <main className="main-content">
+        <div className="dashboard-message">
+          Chargement des statistiques...
+        </div>
+      </main>
+    </div>
+  );
+}
 
-  if (error) {
-    return (
-      <div className="dashboard-message error">
-        Impossible de récupérer les statistiques : {error}
-      </div>
-    );
-  }
+if (error) {
+  return (
+    <div className="app-layout">
+      <Sidebar />
+      <main className="main-content">
+        <div className="dashboard-message error">
+          Impossible de récupérer les statistiques : {error}
+        </div>
+      </main>
+    </div>
+  );
+}
 
   return (
-    <div className="dashboard">
+    <div className="app-layout">
 
       {/* SIDEBAR */}
-      <aside className="sidebar">
-        <div className="logo">
-          <Music size={30} />
-          <h2>CASE À CHOCS</h2>
-        </div>
-
-        <nav>
-          <a className="nav-link active">
-            <TrendingUp size={19} />
-            Tableau de bord
-          </a>
-
-          <a className="nav-link">
-            <CalendarDays size={19} />
-            Événements
-          </a>
-
-          <a className="nav-link">
-            <Ticket size={19} />
-            Billetterie
-          </a>
-
-          <a className="nav-link">
-            <Banknote size={19} />
-            Analyses
-          </a>
-        </nav>
-      </aside>
+        <Sidebar />
 
       {/* CONTENU PRINCIPAL */}
-      <main className="dashboard-content">
+      <main className="main-content dashboard-content">
 
         <header className="dashboard-header">
           <div>
@@ -330,7 +313,7 @@ function Dashboard() {
                     : 0;
 
                 return (
-                  <div className="event-row" key={event.id}>
+                  <div className="top-event-row" key={event.id}>
 
                     <div className="event-rank">
                       {index + 1}
